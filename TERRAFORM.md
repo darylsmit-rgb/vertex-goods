@@ -1,67 +1,157 @@
-# Terraform: VerteX management-cluster Pod Identity
+# Terraform deployment order
 
-These Terraform files configure an **existing** EKS management cluster that
-hosts Palette VerteX. They do not create the VPC, EKS management cluster, or its
-node groups.
+Run the three Terraform roots in order. Separate state files are intentional:
+the management cluster must be configured before VerteX can validate the cloud
+account, and the EKS workload cluster must exist before its Kubernetes provider
+can be initialized.
 
-Terraform manages:
+## Prerequisites
 
-- the Palette, Hubble, and Identity roles in that exact order;
-- Palette EKS lifecycle, optional CAPA CloudFormation, and Pod Identity policy;
-- Hubble validation and Identity service policies;
-- the EKS Pod Identity Agent, unless a Palette cluster profile owns it;
-- the `kube-system/palette-global-config` ConfigMap;
-- the Hubble and Identity Pod Identity associations; and
-- optional `eks-auth:AssumeRoleForPodIdentity` permission for node roles.
+- Terraform 1.5 or later.
+- AWS CLI credentials authorized for IAM, EKS, and any requested VPC endpoints.
+- A working kubeconfig-equivalent IAM principal for the management cluster.
+- A Palette VerteX API key with tenant-admin and target-project permissions.
+- An existing, known-good project-scoped EKS infrastructure profile to clone.
+- A source profile with exactly one `kubernetes-eks` pack, containing the
+  `managedControlPlane:` and `managedMachinePool:` document keys.
+- No `irsaRoles` entry or `eks.amazonaws.com/role-arn` annotation in the source
+  profile. Migrate those identities before this stack is applied.
+- At least one IAM user that will receive `system:masters` access to workload
+  clusters.
 
-It does not create an IAM OIDC provider or a Palette-role association. VerteX
-creates the Palette association when it uses the registered cloud account.
+Use an environment variable instead of placing the VerteX API key in a tfvars
+file:
 
-## New deployment
+```bash
+export SPECTROCLOUD_APIKEY='<vertex-api-key>'
+```
+
+## Stage 1: management cluster
+
+From this directory:
 
 ```bash
 cp terraform.tfvars.example terraform.tfvars
+terraform init
+terraform fmt -check -recursive
+terraform validate
+terraform plan -out management.tfplan
+terraform apply management.tfplan
 ```
 
-Run this from the directory containing this guide. Edit `terraform.tfvars`, then
-run:
+Save these outputs for Stage 2:
+
+```bash
+terraform output -raw palette_role_arn
+terraform output -raw pod_identity_node_policy_arn
+```
+
+If the management add-on, roles, policies, associations, or ConfigMap already
+exist, import them before applying. See the import section below.
+
+After apply, restart the existing Hubble and Identity pods and verify their
+injected credential variables using [COMMANDS.md](COMMANDS.md).
+
+## Stage 2: VerteX profile and EKS workload cluster
+
+The stack clones every layer and value from an existing EKS infrastructure
+profile. It changes only the `kubernetes-eks` layer in the new version. This is
+safer than attempting to guess pack versions that are available in a specific
+air-gapped VerteX registry. Palette EKS values are a multi-document YAML stream;
+the code preserves that stream and inserts the required keys rather than
+decoding and re-encoding it.
+
+```bash
+cd vertex-workload
+cp terraform.tfvars.example terraform.tfvars
+```
+
+Set:
+
+- `palette_role_arn` from Stage 1.
+- `pod_identity_node_policy_arn` from Stage 1.
+- the source profile name/version and a new target version.
+- the real VerteX API endpoint and project.
+- the administrator IAM users.
+- static or dynamic AWS placement values.
+
+Then run:
 
 ```bash
 terraform init
-terraform fmt -check
+terraform fmt -check -recursive
 terraform validate
-terraform plan -out pod-identity.tfplan
-terraform apply pod-identity.tfplan
+terraform plan -out vertex-workload.tfplan
+terraform apply vertex-workload.tfplan
 ```
 
-Register the `palette_role_arn` output in VerteX under **Tenant Settings > Cloud
-Accounts > AWS > EKS Pod Identity**. Leave **Add IAM Policies** blank.
+The new profile version contains these effective Kubernetes-pack settings:
 
-## Agent ownership
-
-If the EKS Pod Identity Agent was installed through a Palette management-cluster
-profile, keep ownership there and set:
-
-```hcl
-manage_pod_identity_agent = false
+```yaml
+managedControlPlane:
+  disableAssociateOIDCProvider: true
+  iamAuthenticatorConfig:
+    mapUsers:
+      - userarn: arn:aws-us-gov:iam::<account-id>:user/<admin-user>
+        username: <kubernetes-username>
+        groups:
+          - system:masters
+managedMachinePool:
+  roleAdditionalPolicies:
+    - arn:aws-us-gov:iam::<account-id>:policy/EKSPodIdentityAgentNode-<suffix>
 ```
 
-If Terraform should own an existing AWS-managed add-on, import it before
-planning:
+Palette should create the `eks-pod-identity-agent` managed add-on while
+deploying through the Pod Identity cloud account. Validate this before Stage 3.
+
+If the cloud account is already registered in VerteX, import it rather than
+creating a duplicate:
 
 ```bash
-terraform import \
-  'aws_eks_addon.pod_identity_agent[0]' \
-  '<management-cluster-name>:eks-pod-identity-agent'
+terraform import spectrocloud_cloudaccount_aws.pod_identity \
+  '<cloud-account-id>:tenant'
 ```
 
-Do not set `service_account_role_arn` on this add-on. The agent uses the node IAM
-role's EKS Auth permission and does not use IRSA.
+## Stage 3: application identities
 
-## Import resources created by the shell script
+Run this stage only after the workload cluster is fully running in both VerteX
+and AWS:
 
-The shell script and Terraform use the same default names and policy documents,
-but Terraform must import existing AWS resources before it can manage them.
+```bash
+cd ../workload-identities
+cp terraform.tfvars.example terraform.tfvars
+terraform init
+terraform fmt -check -recursive
+terraform validate
+terraform plan -out workload-identities.tfplan
+terraform apply workload-identities.tfplan
+```
+
+Each `pod_identities` entry can create:
+
+- a namespace;
+- a service account without an IRSA annotation;
+- an IAM role trusting `pods.eks.amazonaws.com`;
+- managed and/or inline IAM permissions; and
+- an EKS Pod Identity association.
+
+Set `create_service_account = false` when an operator or AWS add-on already
+creates the service account.
+
+`nlb_services` is optional. Each entry creates a Kubernetes
+`type: LoadBalancer` Service with `aws-load-balancer-type: nlb` set at creation
+time, so the native EKS service controller creates an NLB rather than a Classic
+Load Balancer. Do not use it to adopt an existing Service by merely changing
+the annotation; create/import the correctly annotated Service deliberately.
+
+The workload profile already applies the node policy through
+`managedMachinePool.roleAdditionalPolicies`, so `attach_node_policy` defaults
+to `false`. Enable it only when adopting a cluster whose profile omitted that
+policy.
+
+## Import existing management resources
+
+IAM roles and inline policies:
 
 ```bash
 terraform import aws_iam_role.palette SpectroCloudPaletteRole
@@ -76,69 +166,65 @@ terraform import aws_iam_role_policy.identity \
   'SpectroCloudIdentityRole:SpectroCloudIdentity'
 ```
 
-Import the customer-managed lifecycle policy using its full ARN. For the
-default GovCloud existing-VPC configuration:
+Customer-managed policies for the default GovCloud/static configuration:
 
 ```bash
 terraform import aws_iam_policy.palette_lifecycle \
   'arn:aws-us-gov:iam::<account-id>:policy/PaletteMinimumEKS-minimum-static-navy'
-
 terraform import aws_iam_role_policy_attachment.palette_lifecycle \
   'SpectroCloudPaletteRole/arn:aws-us-gov:iam::<account-id>:policy/PaletteMinimumEKS-minimum-static-navy'
-```
 
-When `manage_cloudformation = true`, also import:
-
-```bash
 terraform import 'aws_iam_policy.palette_cloudformation[0]' \
   'arn:aws-us-gov:iam::<account-id>:policy/PaletteCAPACloudFormation-navy'
-
 terraform import 'aws_iam_role_policy_attachment.palette_cloudformation[0]' \
   'SpectroCloudPaletteRole/arn:aws-us-gov:iam::<account-id>:policy/PaletteCAPACloudFormation-navy'
+
+terraform import 'aws_iam_policy.pod_identity_agent_node[0]' \
+  'arn:aws-us-gov:iam::<account-id>:policy/EKSPodIdentityAgentNode-navy'
 ```
 
-Find and import each existing association:
+Management add-on and ConfigMap:
 
 ```bash
-aws eks list-pod-identity-associations \
-  --cluster-name <management-cluster-name> \
-  --region <aws-region>
-
-terraform import aws_eks_pod_identity_association.hubble \
-  '<management-cluster-name>,<hubble-association-id>'
-
-terraform import aws_eks_pod_identity_association.identity \
-  '<management-cluster-name>,<identity-association-id>'
-```
-
-If `palette-global-config` already exists and Terraform should own it:
-
-```bash
+terraform import 'aws_eks_addon.pod_identity_agent[0]' \
+  '<management-cluster-name>:eks-pod-identity-agent'
 terraform import 'kubernetes_config_map_v1.palette_global_config[0]' \
   'kube-system/palette-global-config'
 ```
 
-Always review the first plan after importing. Do not apply until Terraform
-shows that it will update the intended roles rather than replace them.
-
-## After apply
-
-Existing Hubble and Identity pods may predate their associations. Recreate them
-so EKS injects the Pod Identity credential variables, then verify:
+Find association IDs, then import them:
 
 ```bash
-kubectl delete pods -n hubble-system -l app=spectro-hubble
-kubectl delete pods -n palette-identity -l app=palette-identity
+aws eks list-pod-identity-associations \
+  --cluster-name '<management-cluster-name>' \
+  --region '<aws-region>' \
+  --output table
 
-kubectl get pods -n hubble-system -l app=spectro-hubble \
-  -o jsonpath='{.items[0].spec.containers[0].env[*].name}' |
-  tr ' ' '\n' |
-  grep AWS_CONTAINER
+terraform import aws_eks_pod_identity_association.hubble \
+  '<management-cluster-name>,<hubble-association-id>'
+terraform import aws_eks_pod_identity_association.identity \
+  '<management-cluster-name>,<identity-association-id>'
 ```
 
-Expected variables:
+## Import existing VerteX or workload resources
 
-```text
-AWS_CONTAINER_CREDENTIALS_FULL_URI
-AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+If the Pod Identity cloud account is already registered, import it rather than
+creating another account:
+
+```bash
+cd vertex-workload
+terraform import spectrocloud_cloudaccount_aws.pod_identity \
+  '<cloud-account-id>:tenant'
 ```
+
+If Stage 3 should take ownership of the add-on Palette already created:
+
+```bash
+cd workload-identities
+terraform import 'aws_eks_addon.pod_identity_agent[0]' \
+  '<workload-cluster-name>:eks-pod-identity-agent'
+```
+
+Set `manage_pod_identity_agent = true` before that import. Always inspect the
+first plan after an import and do not apply if Terraform proposes replacement
+of an existing IAM role, cluster, or profile version.

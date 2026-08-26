@@ -1,0 +1,77 @@
+aws_region   = "us-gov-west-1"
+cluster_name = "navy-workload-01"
+# aws_profile = "govcloud"
+
+pod_identity_node_policy_arn = "arn:aws-us-gov:iam::180666417904:policy/EKSPodIdentityAgentNode-navy"
+
+# Palette normally owns the managed add-on for clusters deployed through its
+# Pod Identity cloud account. Set true only if this Terraform state will own it.
+manage_pod_identity_agent = false
+# pod_identity_agent_version = "v1.4.0-eksbuild.1"
+
+# The profile's managedMachinePool.roleAdditionalPolicies already attaches this
+# policy. Set true only when adopting a cluster whose profile omitted it.
+attach_node_policy = false
+
+pod_identities = {
+  example_s3_reader = {
+    namespace        = "example"
+    service_account  = "example-app"
+    role_name        = "navy-workload-example-s3-reader"
+    create_namespace = true
+
+    inline_policy_json = <<-JSON
+      {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "ReadApplicationBucket",
+            "Effect": "Allow",
+            "Action": ["s3:GetObject", "s3:ListBucket"],
+            "Resource": [
+              "arn:aws-us-gov:s3:::replace-with-bucket",
+              "arn:aws-us-gov:s3:::replace-with-bucket/*"
+            ]
+          }
+        ]
+      }
+    JSON
+  }
+
+  # Example for a service account created by an add-on rather than Terraform:
+  # ebs_csi = {
+  #   namespace              = "kube-system"
+  #   service_account        = "ebs-csi-controller-sa"
+  #   role_name              = "navy-workload-ebs-csi"
+  #   create_service_account = false
+  #   managed_policy_arns = [
+  #     "arn:aws-us-gov:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+  #   ]
+  # }
+}
+
+# Optional native EKS NLB Service. Its selector must match an existing workload.
+# nlb_services = {
+#   example = {
+#     name      = "example-nlb"
+#     namespace = "example"
+#     selector  = { app = "example-app" }
+#     scheme    = "internal"
+#     subnet_ids = [
+#       "subnet-11111111111111111",
+#       "subnet-22222222222222222"
+#     ]
+#     ports = [
+#       {
+#         name        = "https"
+#         port        = 443
+#         target_port = "8443"
+#       }
+#     ]
+#   }
+# }
+
+tags = {
+  Environment = "workload"
+  Platform    = "vertex"
+}

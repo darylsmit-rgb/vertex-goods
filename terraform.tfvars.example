@@ -16,9 +16,22 @@ manage_pod_identity_agent = true
 # Set false if this ConfigMap is already owned by another deployment system.
 manage_palette_global_config = true
 
-# Usually unnecessary because AmazonEKSWorkerNodePolicy includes the required
-# EKS Auth action. Add node role names only when that permission is absent.
-node_role_names = []
+# Terraform discovers EKS managed node-group roles. Add self-managed node role
+# names here, or set discover_management_node_roles = false and list every role.
+discover_management_node_roles = true
+node_role_names                 = []
+
+# Creates a reusable policy containing eks-auth:AssumeRoleForPodIdentity.
+# Pass the pod_identity_node_policy_arn output to the VerteX workload stack.
+manage_pod_identity_node_policy = true
+
+# Only needed if management nodes cannot reach EKS Auth through NAT/egress.
+# management_eks_auth_endpoint = {
+#   vpc_id              = "vpc-0123456789abcdef0"
+#   subnet_ids          = ["subnet-11111111111111111", "subnet-22222222222222222"]
+#   security_group_ids  = ["sg-0123456789abcdef0"]
+#   private_dns_enabled = true
+# }
 
 tags = {
   Environment = "management"

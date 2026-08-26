@@ -1,0 +1,64 @@
+aws_region  = "us-gov-west-1"
+# aws_profile = "govcloud"
+
+spectrocloud_host         = "https://vertex.example.mil"
+spectrocloud_project_name = "Default"
+
+cloud_account_name          = "navy-govcloud-pod-identity"
+palette_role_arn            = "arn:aws-us-gov:iam::180666417904:role/SpectroCloudPaletteRole"
+pod_identity_node_policy_arn = "arn:aws-us-gov:iam::180666417904:policy/EKSPodIdentityAgentNode-navy"
+
+# Clone all layers from this known-good EKS infrastructure profile.
+source_profile_name    = "navy-eks"
+source_profile_version = "1.0.0"
+target_profile_name    = "navy-eks"
+target_profile_version = "1.1.0"
+
+administrator_users = [
+  {
+    userarn  = "arn:aws-us-gov:iam::180666417904:user/eks-admin"
+    username = "eks-admin"
+    groups   = ["system:masters"]
+  }
+]
+
+workload_cluster_name = "navy-workload-01"
+ssh_key_name          = "navy-admin"
+
+# Static placement: use an existing VPC and one private subnet per AZ.
+vpc_id = "vpc-0123456789abcdef0"
+az_subnets = {
+  us-gov-west-1a = "subnet-11111111111111111"
+  us-gov-west-1b = "subnet-22222222222222222"
+  us-gov-west-1c = "subnet-33333333333333333"
+}
+
+endpoint_access      = "private"
+private_access_cidrs = ["10.0.0.0/8"]
+
+machine_pool = {
+  name          = "worker-pool"
+  count         = 3
+  min           = 3
+  max           = 6
+  instance_type = "m5.xlarge"
+  disk_size_gb  = 60
+  capacity_type = "on-demand"
+  ami_type      = "AL2023_x86_64_STANDARD"
+}
+
+# Configure these only for a no-NAT/no-egress VPC. Security groups must permit
+# node-to-endpoint HTTPS. ECR image pulls also require the S3 gateway endpoint.
+# vpc_endpoint_config = {
+#   vpc_id             = "vpc-0123456789abcdef0"
+#   subnet_ids         = ["subnet-11111111111111111", "subnet-22222222222222222"]
+#   security_group_ids = ["sg-0123456789abcdef0"]
+#   route_table_ids    = ["rtb-11111111111111111", "rtb-22222222222222222"]
+# }
+# interface_endpoint_services = ["eks-auth", "ecr.api", "ecr.dkr", "sts"]
+# gateway_endpoint_services   = ["s3"]
+
+aws_tags = {
+  Environment = "workload"
+  Platform    = "vertex"
+}

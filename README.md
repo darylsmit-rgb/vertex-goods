@@ -1,101 +1,107 @@
-# Palette VerteX EKS Pod Identity IAM setup
+# Palette VerteX EKS Pod Identity
 
-This folder provides two equivalent deployment paths:
+This package implements EKS Pod Identity for both sides of a same-account
+Palette VerteX deployment:
 
-- [Terraform](TERRAFORM.md) for declarative management of an existing VerteX
-  EKS management cluster.
-- `create-vertex-pod-identity-roles.sh` for an AWS CLI-driven setup.
+1. the existing EKS cluster hosting Palette VerteX; and
+2. EKS workload clusters deployed from VerteX cluster profiles.
 
-This folder creates the three IAM roles required when Palette VerteX and its
-EKS workload clusters use the **same AWS account**:
+No Terraform resource in this package creates an IAM OpenID Connect (OIDC)
+provider. Workload profiles set `disableAssociateOIDCProvider: true` before the
+EKS cluster is created.
 
-1. `SpectroCloudPaletteRole` - provisions and manages EKS workload clusters.
-2. `SpectroCloudHubbleRole` - validates the AWS cloud account.
-3. `SpectroCloudIdentityRole` - allows the Identity service to pass the Palette
-   role. This role is created last because its policy contains the Palette role
-   ARN.
+## Directory layout
 
-All three roles trust `pods.eks.amazonaws.com`. The script does not create or
-associate an IAM OpenID Connect (OIDC) provider.
+| Path | Purpose |
+| --- | --- |
+| Root Terraform files | Configure the existing VerteX management cluster. |
+| `vertex-workload/` | Register the AWS Pod Identity cloud account, clone an EKS profile into a no-OIDC version, and deploy an EKS workload cluster from it. |
+| `workload-identities/` | Configure the deployed cluster's agent ownership, node permissions, application service accounts, IAM roles, and associations. |
+| `policies/` | Relative policy and trust-policy documents used by the management stack and shell script. |
+| `COMMANDS.md` | Commands for validation, imports, restarts, and the few operational steps that do not belong in Terraform. |
+| `TERRAFORM.md` | Ordered deployment and import instructions. |
 
-## Shell-script prerequisites
+The root also retains `create-vertex-pod-identity-roles.sh` as an AWS CLI
+alternative for the three management-plane IAM roles.
 
-- Palette VerteX runs on an EKS management cluster in the same AWS account.
-- AWS CLI v2 and `jq` are installed and authenticated.
-- The caller can manage IAM roles/policies and EKS Pod Identity associations.
-- The `eks-pod-identity-agent` add-on is active on the management cluster.
-- The EKS node IAM role includes `eks-auth:AssumeRoleForPodIdentity` (the current
-  AWS-managed `AmazonEKSWorkerNodePolicy` includes this permission).
-- The management cluster has the `kube-system/palette-global-config` ConfigMap
-  with `managementClusterName` set to the EKS management-cluster name.
+## What Terraform manages
 
-Install or update the agent if needed:
+### Management cluster
+
+- `SpectroCloudPaletteRole`, `SpectroCloudHubbleRole`, and
+  `SpectroCloudIdentityRole`, in that dependency order.
+- Palette EKS lifecycle, CAPA CloudFormation, account validation, and Pod
+  Identity permissions.
+- The EKS Pod Identity Agent managed add-on, when enabled.
+- The reusable node policy containing
+  `eks-auth:AssumeRoleForPodIdentity`.
+- Automatic discovery of EKS managed node-group roles and attachment of that
+  policy, plus explicitly listed self-managed node roles.
+- Optional EKS Auth interface VPC endpoint.
+- `kube-system/palette-global-config`.
+- The Hubble and Identity service Pod Identity associations.
+
+The Palette role is intentionally not associated with a management-cluster
+service account. VerteX uses this role through the registered Pod Identity cloud
+account and creates the workload-cluster association it requires.
+
+### VerteX and workload cluster
+
+- Tenant-scoped `pod-identity` AWS cloud-account registration.
+- A new version of an existing, known-good EKS infrastructure cluster profile.
+- `managedControlPlane.disableAssociateOIDCProvider: true` at creation time.
+- At least one IAM administrator under
+  `managedControlPlane.iamAuthenticatorConfig.mapUsers`.
+- A plan-time guard that rejects a source profile containing Kubernetes-pack
+  `irsaRoles` or `eks.amazonaws.com/role-arn` annotations. Those identities
+  must be migrated before an OIDC-free profile can be created.
+- Addition of the Pod Identity node policy under
+  `managedMachinePool.roleAdditionalPolicies`.
+- The EKS workload cluster deployed from that profile version.
+- Optional interface and gateway VPC endpoints for a no-egress VPC.
+- Reusable application IAM roles, Kubernetes service accounts, and EKS Pod
+  Identity associations after the cluster is running.
+- Optional Kubernetes Services explicitly annotated to create native EKS
+  Network Load Balancers (NLBs), preventing the Classic Load Balancer default.
+
+## Important boundaries
+
+- This is the documented three-role **same-account** topology. Cross-account
+  deployment requires Palette target/local role chaining and is not implemented
+  by these files.
+- An EKS cluster always publishes an OIDC issuer URL. The requirement is that no
+  matching **IAM OIDC provider** is registered in the AWS account.
+- Existing IRSA annotations are not automatically convertible because the
+  intended IAM permissions must be reviewed. Use the audit commands in
+  `COMMANDS.md`, then represent each workload in `workload-identities`.
+- Exactly one system should own the Pod Identity Agent. Palette normally owns it
+  on workload clusters deployed through a Pod Identity cloud account. Do not
+  also install the Palette Helm pack or create a second managed add-on.
+- Store Terraform state in an encrypted, access-controlled backend. Cluster and
+  provider resources can place sensitive metadata in state.
+
+## Configure account-level IMDSv2 defaults
+
+AWS configures IMDS defaults per account and per Region.
 
 ```bash
-aws eks create-addon \
-  --cluster-name <management-cluster-name> \
-  --addon-name eks-pod-identity-agent \
-  --region <aws-region>
+export AWS_PROFILE="your-profile"
+export AWS_REGION="us-gov-west-1"
+export IMDS_HOP_LIMIT="2"
+
+aws ec2 modify-instance-metadata-defaults \
+  --profile "$AWS_PROFILE" \
+  --region "$AWS_REGION" \
+  --http-tokens required \
+  --http-put-response-hop-limit "$IMDS_HOP_LIMIT"
 ```
 
-If the add-on already exists, use `aws eks update-addon` instead.
-
-## Run the shell script
-
-For an existing VPC (the default and least-privilege network mode):
+Verify the account defaults:
 
 ```bash
-./create-vertex-pod-identity-roles.sh \
-  --cluster-name <management-cluster-name> \
-  --region us-gov-west-1 \
-  --network-mode existing \
-  --name-suffix navy \
-  --yes
+aws ec2 get-instance-metadata-defaults \
+  --profile "$AWS_PROFILE" \
+  --region "$AWS_REGION"
 ```
 
-Run the command from the directory containing this README. The script resolves
-all policy paths relative to its own location, so it can also be invoked from a
-different working directory.
-
-Use `--network-mode create` if Palette must create the VPC and networking. Use
-`--skip-associations` if the management cluster is not ready yet and you only
-want to create the IAM resources.
-
-The script is repeatable. It updates the role trust and inline policies,
-versions the customer-managed policies only when their documents change, and
-creates or updates these associations:
-
-| Namespace | Service account | Role |
-| --- | --- | --- |
-| `hubble-system` | `spectro-hubble` | Hubble |
-| `palette-identity` | `palette-identity` | Identity |
-
-The Palette role is intentionally **not** associated by this script. VerteX
-creates its association when it uses the registered AWS cloud account.
-
-In VerteX, select **EKS Pod Identity** for the AWS account and enter the Palette
-role ARN printed by the script. Leave **Add IAM Policies** blank because the
-required permissions are already attached.
-
-## OIDC clarification
-
-Spectro Cloud's published minimum EKS lifecycle policy currently contains IAM
-permissions to inspect and manage OIDC providers. Having those permissions does
-not create an OIDC provider, and this script never calls any IAM OIDC-provider
-API. The workload EKS cluster profile must still disable automatic association:
-
-```yaml
-managedControlPlane:
-  disableAssociateOIDCProvider: true
-```
-
-EKS still exposes its built-in cluster issuer URL; the relevant outcome is that
-there is no matching IAM OIDC provider registered in the AWS account and pods
-use EKS Pod Identity associations instead of IRSA.
-
-## Scope
-
-This script is for the documented three-role **same-account** topology. A
-cross-account topology requires four roles with different trust policies and is
-not handled here.
-# vertex-goods
+Start with [TERRAFORM.md](TERRAFORM.md).

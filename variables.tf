@@ -107,7 +107,7 @@ variable "manage_palette_global_config" {
 }
 
 variable "node_role_names" {
-  description = "Optional EKS node IAM role names that need the minimal EKS Auth permission for the agent. Leave empty when AmazonEKSWorkerNodePolicy already supplies it."
+  description = "Additional EKS node IAM role names that need the minimal EKS Auth permission. Managed node-group roles can be discovered automatically."
   type        = set(string)
   default     = []
 
@@ -120,9 +120,32 @@ variable "node_role_names" {
   }
 }
 
+variable "discover_management_node_roles" {
+  description = "Discover IAM roles from all EKS managed node groups and attach the Pod Identity node policy."
+  type        = bool
+  default     = true
+}
+
+variable "manage_pod_identity_node_policy" {
+  description = "Create the reusable eks-auth:AssumeRoleForPodIdentity policy and attach it to management node roles. Its ARN can also be used in the VerteX workload profile."
+  type        = bool
+  default     = true
+}
+
+variable "management_eks_auth_endpoint" {
+  description = "Optional EKS Auth interface endpoint for management nodes without NAT/internet egress."
+  type = object({
+    vpc_id              = string
+    subnet_ids          = set(string)
+    security_group_ids  = set(string)
+    private_dns_enabled = optional(bool, true)
+  })
+  default  = null
+  nullable = true
+}
+
 variable "tags" {
   description = "Additional tags for AWS resources."
   type        = map(string)
   default     = {}
 }
-

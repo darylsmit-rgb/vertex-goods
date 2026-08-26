@@ -21,6 +21,16 @@ locals {
     "__PALETTE_ROLE_ARN__",
     aws_iam_role.palette.arn
   )))
+
+  discovered_node_role_names = toset([
+    for node_group in data.aws_eks_node_group.management :
+    element(reverse(split("/", node_group.node_role_arn)), 0)
+  ])
+
+  management_node_role_names = setunion(
+    var.node_role_names,
+    local.discovered_node_role_names
+  )
 }
 
 # Role 1: Palette. The Hubble role explicitly depends on the completed Palette
@@ -141,17 +151,22 @@ resource "aws_eks_addon" "pod_identity_agent" {
   tags = {
     Component = "eks-pod-identity-agent"
   }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.pod_identity_agent_node,
+    aws_vpc_endpoint.management_eks_auth
+  ]
 }
 
 # Optional least-privilege permission for management-cluster node roles that do
 # not already have it through AmazonEKSWorkerNodePolicy.
 resource "aws_iam_policy" "pod_identity_agent_node" {
-  count = length(var.node_role_names) > 0 ? 1 : 0
+  count = var.manage_pod_identity_node_policy ? 1 : 0
 
   name        = "EKSPodIdentityAgentNode-${var.name_suffix}"
   description = "Allow EKS nodes to call AssumeRoleForPodIdentity"
-  policy      = jsonencode({
-    Version   = "2012-10-17"
+  policy = jsonencode({
+    Version = "2012-10-17"
     Statement = [
       {
         Sid      = "EKSPodIdentityAgent"
@@ -168,10 +183,28 @@ resource "aws_iam_policy" "pod_identity_agent_node" {
 }
 
 resource "aws_iam_role_policy_attachment" "pod_identity_agent_node" {
-  for_each = var.node_role_names
+  for_each = var.manage_pod_identity_node_policy ? local.management_node_role_names : toset([])
 
   role       = each.value
   policy_arn = aws_iam_policy.pod_identity_agent_node[0].arn
+}
+
+# Private clusters without NAT require an EKS Auth interface endpoint. Omit this
+# resource when the nodes already reach the regional EKS Auth public endpoint.
+resource "aws_vpc_endpoint" "management_eks_auth" {
+  count = var.management_eks_auth_endpoint == null ? 0 : 1
+
+  vpc_id              = try(var.management_eks_auth_endpoint.vpc_id, null)
+  service_name        = "com.amazonaws.${var.aws_region}.eks-auth"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = try(var.management_eks_auth_endpoint.subnet_ids, null)
+  security_group_ids  = try(var.management_eks_auth_endpoint.security_group_ids, null)
+  private_dns_enabled = try(var.management_eks_auth_endpoint.private_dns_enabled, true)
+
+  tags = {
+    Name      = "${var.management_cluster_name}-eks-auth"
+    Component = "eks-pod-identity-agent"
+  }
 }
 
 # Spectro Cloud requires this ConfigMap to identify the EKS management cluster.

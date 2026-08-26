@@ -43,3 +43,17 @@ output "pod_identity_agent_version" {
   value       = try(aws_eks_addon.pod_identity_agent[0].addon_version, null)
 }
 
+output "pod_identity_node_policy_arn" {
+  description = "Policy ARN to add to workload-cluster node roles in the VerteX EKS profile."
+  value       = try(aws_iam_policy.pod_identity_agent_node[0].arn, null)
+}
+
+output "management_node_role_names" {
+  description = "Management-cluster node roles receiving the EKS Auth permission."
+  value       = sort(tolist(local.management_node_role_names))
+}
+
+output "management_eks_auth_vpc_endpoint_id" {
+  description = "EKS Auth VPC endpoint ID when Terraform creates one."
+  value       = try(aws_vpc_endpoint.management_eks_auth[0].id, null)
+}
