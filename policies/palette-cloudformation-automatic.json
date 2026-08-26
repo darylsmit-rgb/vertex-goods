@@ -1,0 +1,25 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CloudFormationStackPermissions",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:CreateStack",
+        "cloudformation:DescribeStacks",
+        "cloudformation:UpdateStack"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "IAMCAPARolePermissions",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:AttachRolePolicy"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+

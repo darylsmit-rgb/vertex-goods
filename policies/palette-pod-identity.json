@@ -1,0 +1,25 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "EKSPodIdentityAndAddonManagement",
+      "Effect": "Allow",
+      "Action": [
+        "eks:ListPodIdentityAssociations",
+        "eks:CreatePodIdentityAssociation",
+        "eks:DeletePodIdentityAssociation",
+        "eks:DescribeAddonVersions",
+        "eks:CreateAddon",
+        "eks:UpdateAddon"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "PassPodIdentityRoles",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "*"
+    }
+  ]
+}
+

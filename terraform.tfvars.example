@@ -1,0 +1,26 @@
+aws_region              = "us-gov-west-1"
+management_cluster_name = "replace-with-vertex-management-cluster"
+
+# Optional named AWS CLI profile.
+# aws_profile = "govcloud"
+
+# existing: Palette deploys into an existing VPC.
+# create:   Palette may create and delete VPC networking.
+network_mode = "existing"
+name_suffix  = "navy"
+
+# Set false when the EKS Pod Identity Agent is already owned by a Palette
+# cluster profile or another Terraform state.
+manage_pod_identity_agent = true
+
+# Set false if this ConfigMap is already owned by another deployment system.
+manage_palette_global_config = true
+
+# Usually unnecessary because AmazonEKSWorkerNodePolicy includes the required
+# EKS Auth action. Add node role names only when that permission is absent.
+node_role_names = []
+
+tags = {
+  Environment = "management"
+  Platform    = "vertex"
+}
