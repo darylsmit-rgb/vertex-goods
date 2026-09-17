@@ -1,0 +1,146 @@
+# Domino-on-Palette (EKS) — cluster profile TEMPLATE
+#
+# Fill in the four <PLACEHOLDERS> and paste this into Palette's UI:
+#   Cluster Profiles → Add Cluster Profile → Import → Import from File
+# (or POST to /v1/clusterprofiles/import via the Palette API — see START-HERE.md).
+#
+# This is the INFRA host profile. Once the cluster is Running from this profile,
+# Domino's own `ddlctl` installs the application layer separately (see
+# OFFLINE-IMAGES-DDLCTL.md and PALETTE-UI-RUNBOOK.md).
+#
+# ------ what you edit ------
+# 1. <K8S_VERSION>   e.g. "1.30" — must match a version present in your pack registry
+# 2. <PACK_REGISTRY> e.g. "ecr" or the registry name shown in System Console → Registries
+# 3. <PASTE_...>     each of the four blocks below — paste the FULL contents of the
+#                    corresponding file in this folder (they exist as *.yaml.tmpl and
+#                    *.yaml companions to this template). Palette REPLACES pack values
+#                    wholesale (no merge), so snippets don't work — the whole values
+#                    document is what belongs in each `values:` block.
+# 4. Domino ingress hostname — only inside coredns-phonehome-manifest.yaml if used;
+#    optional (skip if your Palette rootDomain resolves via real public DNS).
+#
+# ------ what the profile provides ------
+# - Amazon Linux 2 EKS AMI (OS)
+# - Kubernetes on EKS at your chosen minor
+# - Calico CNI (required by Domino — provides NetworkPolicy)
+# - EBS CSI + `dominodisk` StorageClass (Domino's block store)
+# - Optional EFS CSI + `dominoshared` StorageClass (Domino's RWX store)
+# - Optional CoreDNS phone-home patch (for airgap / CASB / .local rootDomain cases)
+#
+apiVersion: profile.palette.spectrocloud.com/v1
+kind: ClusterProfile
+metadata:
+  name: domino-host-eks
+  labels:
+    scope: project
+    workload: domino
+spec:
+  version: "1.0.0"
+  cloudType: eks              # use "awsgov" if this is a VerteX (FIPS) install on GovCloud
+  type: cluster
+
+  packs:
+    # ------------------------------------------------------------------
+    # 1. OS pack — Amazon Linux 2 AMI for EKS nodes
+    # ------------------------------------------------------------------
+    - name: amazon-linux-eks
+      type: spectro
+      layer: os
+      tag: "1.0.0"
+      registry: <PACK_REGISTRY>
+      # OS pack values are defaults; leave empty unless your environment needs a specific AMI.
+      values: ""
+
+    # ------------------------------------------------------------------
+    # 2. Kubernetes pack — EKS-flavored kubernetes-eks
+    # ------------------------------------------------------------------
+    - name: kubernetes-eks
+      type: spectro
+      layer: k8s
+      tag: "<K8S_VERSION>.x"        # e.g. 1.30.x  (1.29 / 1.30 / 1.31 / 1.32 have been verified)
+      registry: <PACK_REGISTRY>
+      values: ""
+
+    # ------------------------------------------------------------------
+    # 3. CNI — Calico (Domino requires NetworkPolicy; AWS VPC CNI alone doesn't ship it)
+    # ------------------------------------------------------------------
+    - name: cni-calico
+      type: spectro
+      layer: cni
+      tag: "3.27.x"                 # 3.27.2 is the earliest 3.27 in mirrors; 3.28.x / 3.29.x / 3.30.x also fine
+      registry: <PACK_REGISTRY>
+      values: ""
+
+    # ------------------------------------------------------------------
+    # 4. CSI — EBS + `dominodisk` StorageClass + IRSA on ebs-csi-controller-sa
+    # ------------------------------------------------------------------
+    # WHY the full values are needed: Palette REPLACES a pack's values wholesale (no
+    # merge). Providing a snippet wipes the pack's default image/sidecar/controller
+    # config. So we paste the FULL pack values with two customizations:
+    #   (a) a `dominodisk` StorageClass definition (Domino's block-store)
+    #   (b) an IRSA annotation on ebs-csi-controller-sa (survives Palette reconciliation
+    #       — see DOMINO-ADDON-LAYERS.md for why node-role IAM attachment gets reverted)
+    - name: csi-aws-ebs
+      type: spectro
+      layer: csi
+      tag: "1.30.x"                 # 1.17/1.26.1/1.28/1.30/1.41/1.43/1.46 have been in various mirrors
+      registry: <PACK_REGISTRY>
+      values: |
+        # <PASTE_csi-aws-ebs-values.yaml.tmpl>
+        # Substitute the <PLACEHOLDER> tokens documented at the top of that file:
+        #   <AWS_ACCOUNT_ID>, <ECR_PREFIX>, ebs_csi_irsa_role_arn
+        # See csi-aws-ebs-values.spectrovars.yaml for the Palette-UI variable-form
+        # version if you'd rather parameterize via Palette variables.
+
+    # ------------------------------------------------------------------
+    # 5. EFS storage — Add-Manifest layer (Domino's OWN EFS CSI driver + `dominoshared` SC)
+    # ------------------------------------------------------------------
+    # WHY as a manifest and not a second CSI pack: Palette allows ONE pack per core
+    # layer. Both `csi-aws-ebs` and `csi-aws-efs` self-declare layer=csi, so a second
+    # would sit in "WaitingForOtherLayers" forever. Deploying Domino's EFS CSI as an
+    # Add-Manifest layer (type: manifest) sidesteps that constraint.
+    #
+    # This layer is OPTIONAL — required only if your Domino workload needs RWX
+    # storage (project shared / user shared / dataset shared). Remove it entirely
+    # if RWX isn't needed and set Domino's config to `storage_classes.shared.create=false`.
+    #
+    # FIPS note: the EFS CSI images this manifest references are non-FIPS. On a VerteX
+    # (FIPS-strict) mgmt plane you must toggle Platform Settings → "allow non-FIPS
+    # packages" ON before applying this profile — otherwise admission rejects it.
+    - name: efs-storage
+      type: manifest
+      layer: addon
+      manifests:
+        - name: dominoshared-efs
+          content: |
+            # <PASTE_storage-layer-efs-csi-manifest.yaml>
+            # Substitute:
+            #   {{.spectro.var.STORAGE_EFS_ID}}  → your EFS file system ID (fs-XXXXXXXX)
+            # The manifest creates the EFS CSI driver, its ServiceAccount, IRSA annotation,
+            # and the `dominoshared` StorageClass. See DOMINO-ADDON-LAYERS.md for detail.
+
+    # ------------------------------------------------------------------
+    # 6. CoreDNS phone-home — Add-Manifest layer (OPTIONAL)
+    # ------------------------------------------------------------------
+    # WHY: when the Palette rootDomain is a .local fake DNS name (VerteX airgap)
+    # OR public DNS to the mgmt-plane ELB is intercepted by a CASB (Netskope, Zscaler,
+    # Prisma, etc.), the workload cluster's kube-system/coredns won't resolve the
+    # mgmt-plane hostname → cluster-management-agent can't phone home → cluster provisioning
+    # halts at "phone home". This layer patches coredns' Corefile with a `hosts { }` block
+    # mapping the rootDomain to the mgmt-plane ELB IP.
+    #
+    # REMOVE this whole block if:
+    #   - your Palette rootDomain resolves via public/customer DNS end-to-end, AND
+    #   - no CASB is between the workload cluster's egress and the mgmt-plane hostname
+    #
+    # The manifest is idempotent (a small Job runs the patch once at cluster bring-up).
+    - name: coredns-phonehome
+      type: manifest
+      layer: addon
+      manifests:
+        - name: coredns-phonehome-patcher
+          content: |
+            # <PASTE_coredns-phonehome-manifest.yaml>
+            # Substitute:
+            #   {{.spectro.var.MGMT_ELB_IP}}      → mgmt-plane ELB IP (see Palette UI → System / About)
+            #   {{.spectro.var.MGMT_ROOTDOMAIN}}  → mgmt-plane rootDomain (e.g. palette.mycompany.com)

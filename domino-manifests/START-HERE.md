@@ -3,10 +3,17 @@
 **Audience:** platform / infrastructure engineers deploying Domino on top of a
 Palette-managed EKS cluster on AWS (commercial or GovCloud).
 
-**What's in this folder:** the manifests, pack values, and runbooks needed to
-run through the deployment via the Palette UI + `ddlctl` — the manifest / UI
-path only. Terraform-driven variants exist internally at Spectro and are
-available on request, but they're not included here.
+**What's in this folder:** the manifests, pack values, a ready-to-import
+cluster-profile template, and runbooks needed to run through the deployment
+via the Palette UI + `ddlctl` — the manifest / UI path only. Terraform-driven
+variants exist internally at Spectro and are available on request, but they're
+not included here.
+
+**For AI-assisted implementations:** `.claude/skills/domino-on-palette-eks/`
+contains a skill file that loads automatically when this repo is opened in
+Claude Code. Any Claude session in this folder will pick up the design
+patterns, common gotchas, and file-composition rules that would otherwise
+require reading every doc.
 
 ## Read in this order
 
@@ -25,6 +32,14 @@ available on request, but they're not included here.
 5. **[OFFLINE-IMAGES-DDLCTL.md](OFFLINE-IMAGES-DDLCTL.md)** — airgap
    image mirroring (Domino's 207 images → your ECR) and `ddlctl bootstrap`
    quirks. Skip if you're on a connected environment.
+
+## Cluster profile template (start here for the profile itself)
+
+[CLUSTER-PROFILE-TEMPLATE.yaml](CLUSTER-PROFILE-TEMPLATE.yaml) is the
+ready-to-import cluster-profile shell. Edit four things (`<K8S_VERSION>`,
+`<PACK_REGISTRY>`, plus paste the values from the four pack-values files
+below), and import via Palette UI → Cluster Profiles → Add Cluster Profile
+→ Import from File. See PALETTE-UI-RUNBOOK.md for the click path.
 
 ## Manifests + pack values in this folder
 
